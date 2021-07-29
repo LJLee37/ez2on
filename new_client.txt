@@ -1,0 +1,268 @@
+
+*** pseudo-code ***
+
+module app+ {
+
+  define image_name = "2ON";
+
+  // utf-16le
+  var module_name() ushort = { 'm', 'e', 'A', 's', 's', 0 };
+
+}
+
+module app+ {
+
+  private include bean, rt, std,
+    lib::mixx;
+
+  class novice_game {
+
+    private include bean, rt, std,
+      mod::game, mod::pmem, mod::csharp;
+
+    inherit game = super;
+
+    struct {
+      struct ptr {
+        // InGameCore_o
+        ingame_core void;
+      }
+      loaded bool;
+    }
+
+    constructor() {
+      this.ptr.ingame_core = null;
+      this.loaded = false;
+    }
+
+    destructor();
+
+    module offsets {
+
+      // InGameCore$$_cctor
+      define {
+        ingamecore_typeinfo = 0x254E498;
+        ingamecore_typeinfo_static_fields = 0x0B8;
+        ingamecore_typeinfo_static_fields_instance = 0x0;
+      }
+
+      module ingamecore {
+
+        /*
+          normalNoteData(1st)
+          longNoteData(2nd)
+          System_Collections_Generic_List_List_InGameCore_[A-Z|0-9]+___o\*
+        */
+
+        define {
+          /*
+            InGameCore$$Update:
+              v?->fields.cur_time = (float)((float)((float)((float)(v? - v?) - 5.0) - v?) + v?)
+                * v?->static_fields->?;
+          */
+          cur_time = 0x2E4;
+          normal_note_data = 0x1A8;
+          long_note_data = 0x1B8;
+        }
+
+      }
+
+    }
+
+    // InGameCore$$_cctor
+    func get_ingame_core() uint64 {
+      var mem = &this.mem;
+      var typeinfo = mem->read_t<uint64>(this.mod_base +
+        offsets::ingamecore_typeinfo);
+      var static_fields = mem->read_t<uint64>(typeinfo +
+        offsets::ingamecore_typeinfo_static_fields);
+      return mem->read_t<uint64>(static_fields +
+        offsets::ingamecore_typeinfo_static_fields_instance);
+    }
+
+    func get_cur_time() float {
+      return this.mem->read_t<float>(this.ptr.ingame_core +
+        offsets::ingamecore::cur_time);
+    }
+
+    func get_list_arr(list_ptr void) .mono_list::array, int32 {
+      var list mono_list;
+      if this.mem->read_stt(list, list_ptr) {
+        var item_size = list.fields.size;
+        if item_size > 0 and item_size < 10000 {
+          var list_arr = mono_list::new_array(item_size);
+          if this.mem->read(list_arr, list.fields.items,
+            mono_list::array_size(item_size)) {
+            return list_arr, item_size;
+          }
+          free(list_arr);
+        }
+      }
+      return null, 0;
+    }
+
+    func extract_notes(notes& vector<note>, data void) {
+      struct normal_note {
+        klass void;
+        monitor void;
+        time float;
+        unknown1 double;
+        unknown2 int32;
+        unknown3 float; // 0.0
+        unknown4 float; // 1.0
+        pressed uint8;
+      }
+      var cur_time = this->get_cur_time();
+      var section_arr, section_size = this->get_list_arr(data);
+      if section_arr {
+        defer free(section_arr);
+        loop section_size, section_idx {
+          var note_arr, note_size = this->get_list_arr(
+            section_arr.items[section_idx]);
+          if note_arr {
+            defer free(note_arr);
+            loop note_size, note_idx {
+              var note normal_note;
+              if this.mem->read_stt(note, note_arr.items[note_idx]) {
+                if !note.pressed and note.time >= cur_time {
+                  var new_note = notes->new();
+                  new_note.section = section_idx;
+                  new_note.time = note.time;
+                  new_note.len = 0.0f;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    func extract_long_notes(notes& vector<note>, data void) {
+      struct long_note {
+        klass void;
+        monitor void;
+        time float;
+        unknown1 double;
+        len double;
+        unknown2 int32;
+        unknown3 float;
+        unknown4 float;
+        pressed uint8;
+        unknown5 uint8;
+        unknown6 uint8;
+        double_list void;
+        int_list void;
+      }
+      var cur_time = this->get_cur_time();
+      var section_arr, section_size = this->get_list_arr(data);
+      if section_arr {
+        defer free(section_arr);
+        loop section_size, section_idx {
+          var note_arr, note_size = this->get_list_arr(
+            section_arr.items[section_idx]);
+          if note_arr {
+            defer free(note_arr);
+            loop note_size, note_idx {
+              var note long_note;
+              if this.mem->read_stt(note, note_arr.items[note_idx]) {
+                if !note.pressed and note.time >= cur_time and note.len > 0.0f {
+                  var new_note = notes->new();
+                  new_note.section = section_idx;
+                  new_note.time = note.time;
+                  new_note.len = note.len;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    override on_update() {
+      this.ptr.ingame_core = this->get_ingame_core();
+      if this.loaded {
+        if !this.ptr.ingame_core {
+          printf("unloaded\n");
+          this.loaded = false;
+        }
+      else
+        if this.ptr.ingame_core {
+          var cur_time = this->get_cur_time();
+          if cur_time > 0.0f {
+            var note_data = this.mem->read_t<uint64>(this.ptr.ingame_core +
+              offsets::ingamecore::normal_note_data);
+            var long_note_data = this.mem->read_t<uint64>(this.ptr.ingame_core +
+              offsets::ingamecore::long_note_data);
+            if note_data and long_note_data {
+              this->extract_notes(this.notes, note_data);
+              this->extract_long_notes(this.notes, long_note_data);
+              qsort_cmp(this.notes, lambda(s. note, b. note) bool {
+                if s.time < b.time;
+                  return true;
+                return false;
+              });
+              printf("loaded: %d\n", this.notes->size());
+              this.loaded = true;
+            }
+          }
+        }
+      }
+    }
+
+  public:
+
+    // ...
+
+  }
+
+  var game novice_game;
+
+  func menu() {
+    lambda read_line(buf[] char, len int) bool {
+      if !gets(buf, len);
+        return false;
+      var flush_buf(32) char;
+      loop {
+        var slen = strlen(buf);
+        if !slen {
+          break;
+        elseif buf[slen - 1] == '\n';
+          buf[slen - 1] = '\0';
+          break;
+        }
+        buf = &flush_buf;
+        if !gets(buf, sizeof(flush_buf));
+          break;
+      }
+      return true;
+    };
+    loop {
+      var line(32) char;
+      if !read_line(&line, sizeof(line));
+        break;
+      switch line[0] {
+      case 'e' {
+        break -1;
+      }
+      default {
+        printf("unknown command: %c\n", __value__);
+        break;
+      }
+      }
+    }
+  }
+
+  func main() {
+    if !mixx_init();
+      return;
+    if !game->init(image_name, &module_name) or !game->run();
+      return;
+    menu();
+    game->quit();
+  }
+
+}
+
+func main() {
+  app::main();
+}
